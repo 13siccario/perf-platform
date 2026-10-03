@@ -1,0 +1,83 @@
+name: reusable-perf-gate
+
+on:
+  workflow_call:
+    inputs:
+      app_start_command:
+        description: Shell command that starts the app under test
+        required: false
+        type: string
+        default: ''
+      healthcheck_url:
+        description: Optional URL polled until the app is ready
+        required: false
+        type: string
+        default: ''
+      target_url:
+        description: Base URL passed to both k6 scenarios
+        required: true
+        type: string
+      load_scenario:
+        description: Path to the load-test scenario in the caller repository
+        required: true
+        type: string
+      concurrency_scenario:
+        description: Path to the concurrency scenario in the caller repository
+        required: true
+        type: string
+      cleanup_command:
+        description: Optional shell command run after the scenarios
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: grafana/setup-k6-action@v1
+      - name: Start app
+        if: ${{ inputs.app_start_command != '' }}
+        env:
+          APP_START_COMMAND: ${{ inputs.app_start_command }}
+        run: bash -euo pipefail -c "$APP_START_COMMAND"
+      - name: Wait for app
+        if: ${{ inputs.healthcheck_url != '' }}
+        env:
+          HEALTHCHECK_URL: ${{ inputs.healthcheck_url }}
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS "$HEALTHCHECK_URL"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "App did not become healthy at $HEALTHCHECK_URL" >&2
+          exit 1
+      - name: Run load scenario
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+          LOAD_SCENARIO: ${{ inputs.load_scenario }}
+        run: k6 run --summary-export=load-summary.json -e TARGET_URL="$TARGET_URL" "$LOAD_SCENARIO"
+      - name: Run concurrency scenario
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+          CONCURRENCY_SCENARIO: ${{ inputs.concurrency_scenario }}
+        run: k6 run --summary-export=concurrency-summary.json -e TARGET_URL="$TARGET_URL" "$CONCURRENCY_SCENARIO"
+      - name: Clean up app
+        if: ${{ always() && inputs.cleanup_command != '' }}
+        env:
+          CLEANUP_COMMAND: ${{ inputs.cleanup_command }}
+        run: bash -euo pipefail -c "$CLEANUP_COMMAND"
+      - name: Upload k6 reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            load-summary.json
+            concurrency-summary.json
+          if-no-files-found: ignore
+          retention-days: 30

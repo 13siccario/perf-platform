@@ -1,22 +1,16 @@
 name: perf-gate
-on: pull_request
+on:
+  pull_request:
+  push:
+    branches: ['**']
 
 jobs:
   perf:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: grafana/setup-k6-action@v1
-      - name: Start app
-        run: |
-          docker compose up -d --build
-          for i in $(seq 1 30); do curl -sf localhost:8000/health && exit 0; sleep 2; done
-          docker compose logs; exit 1
-      - name: Load test
-        run: k6 run scenarios/load/products.js
-      - name: Concurrency test (oversell)
-        run: k6 run scenarios/concurrency/oversell.js
-      - name: Stop app
-        if: always()
-        run: docker compose down -v
+    uses: ./.github/workflows/reusable-perf-gate.yml
+    with:
+      app_start_command: docker compose up -d --build
+      healthcheck_url: http://localhost:8000/health
+      target_url: http://localhost:8000
+      load_scenario: scenarios/load/products.js
+      concurrency_scenario: scenarios/concurrency/oversell.js
+      cleanup_command: docker compose down -v
