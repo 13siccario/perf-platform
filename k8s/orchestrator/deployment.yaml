@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chaos-gate-orchestrator
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chaos-gate-orchestrator
+  template:
+    metadata:
+      labels:
+        app: chaos-gate-orchestrator
+    spec:
+      serviceAccountName: chaos-gate-orchestrator
+      containers:
+        - name: orchestrator
+          image: your-registry/chaos-gate-orchestrator:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NAMESPACE
+              value: default
+            - name: CHAOS_GATE_STEP_INDEX
+              value: "1"
+            - name: PROMETHEUS_URL
+              value: http://prometheus-operated:9090
+            - name: SLO_SERVICE_NAME
+              value: backend-api
+            - name: ERROR_BUDGET_THRESHOLD
+              value: "0.02"
+            - name: CHAOS_DURATION_SECONDS
+              value: "180"
+            - name: POLL_INTERVAL_SECONDS
+              value: "10"
+            - name: CHAOS_APP_LABEL
+              value: app=backend
+            - name: CHAOS_APP_NAMESPACE
+              value: default
+            - name: CHAOS_SERVICE_ACCOUNT
+              value: litmus-admin
+            - name: CHAOS_RESULT_TIMEOUT_SECONDS
+              value: "300"
+            - name: REPORT_DIR
+              value: /reports
+            - name: GRAFANA_DASHBOARD_URL
+              value: ""
+          volumeMounts:
+            - name: reports
+              mountPath: /reports
+      volumes:
+        - name: reports
+          persistentVolumeClaim:
+            claimName: chaos-gate-reports

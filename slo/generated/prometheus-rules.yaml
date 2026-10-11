@@ -1,0 +1,10 @@
+groups:
+  - name: backend-api-slo
+    rules:
+      - record: slo:sli_error:ratio_rate5m
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+        labels:
+          sloth_service: backend-api

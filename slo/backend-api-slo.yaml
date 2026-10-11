@@ -1,0 +1,11 @@
+version: "prometheus/v1"
+service: "backend-api"
+slos:
+  - name: "requests-availability"
+    objective: 99.5
+    sli:
+      events:
+        error_query: sum(rate(http_requests_total{status=~"5.."}[5m]))
+        total_query: sum(rate(http_requests_total[5m]))
+    alerting:
+      name: backend-api-availability
