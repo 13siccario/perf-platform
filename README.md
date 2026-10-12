@@ -1,110 +1,74 @@
-# perf-platform
+# Chaos-Gated Canary Delivery Pipeline
 
-A reusable k6 performance gate for pull requests and pushes. It includes a FastAPI + Postgres demo shop, load and concurrency scenarios, and GitHub Actions workflows that publish downloadable test summaries.
+This repository implements the chaos-gated canary delivery design described in the attached design document. The project is centered on a Python orchestrator that watches Argo Rollouts pause gates, runs LitmusChaos experiments, monitors Prometheus SLO burn rate, decides whether to promote or abort, and writes a final HTML evidence report to a PVC.
 
-## What the checks measure
+## What is included
 
-| Scenario | Workload | Pass condition |
-| --- | --- | --- |
-| `scenarios/load/products.js` | Ramps to 20 virtual users requesting `/products` | p95 latency under 500 ms and fewer than 1% failed requests |
-| `scenarios/concurrency/oversell.js` | 100 users each try to buy from stock of 10 | Exactly 10 purchases succeed |
+- Python orchestrator in [orchestrator](orchestrator)
+- Kubernetes RBAC, Deployment, PVC, and sample Rollout manifests in [k8s](k8s)
+- LitmusChaos reference manifests in [k8s/chaos](k8s/chaos)
+- Sloth/SLO definition examples in [slo](slo)
+- A focused regression suite in [tests/test_orchestrator.py](tests/test_orchestrator.py)
+- An HTML report template in [orchestrator/templates/report.html.j2](orchestrator/templates/report.html.j2)
 
-The demo app uses an atomic stock update by default. Set `BUY_MODE=naive` to enable a deliberately unsafe read-then-write implementation and see the concurrency threshold fail.
+## Design alignment
 
-## Requirements
+This implementation covers the main design areas:
 
-- Docker with the Compose plugin
-- [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/) to run the scenarios locally
-- A GitHub repository with GitHub Actions enabled for automatic runs
+- Rollout watch and gate detection
+- SLO burn-rate monitor
+- sequential chaos execution with fail-fast behavior
+- promote/abort control via Kubernetes API patching
+- HTML report generation with decision evidence
+- deployment manifests for the orchestrator and RBAC model
 
-## Run locally
+## Local setup
 
-From the repository root, start the app and run both scenarios:
+Create and activate a local venv:
 
-```sh
-docker compose up -d --build
-curl http://localhost:8000/health
-k6 run scenarios/load/products.js
-k6 run scenarios/concurrency/oversell.js
+```bash
+cd /Users/cheeseburger/Developer/projectsxd/perf-platform
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r orchestrator/requirements.txt
 ```
 
-To demonstrate the race condition, restart the app in naive mode and rerun the concurrency scenario:
+Run the check suite:
 
-```sh
-docker compose down -v
-BUY_MODE=naive docker compose up -d --build
-k6 run scenarios/concurrency/oversell.js
+```bash
+python -m pytest -q tests/test_orchestrator.py
 ```
 
-The final command should fail because more than 10 requests can report a successful purchase. Restore the normal mode with:
+## Run the orchestrator
 
-```sh
-docker compose down -v
-docker compose up -d --build
+In a Kubernetes cluster with Argo Rollouts, LitmusChaos, and Prometheus available:
+
+```bash
+export NAMESPACE=default
+export CHAOS_GATE_STEP_INDEX=1
+export PROMETHEUS_URL=http://prometheus-operated:9090
+export SLO_SERVICE_NAME=backend-api
+export ERROR_BUDGET_THRESHOLD=0.02
+export CHAOS_DURATION_SECONDS=180
+export POLL_INTERVAL_SECONDS=10
+export REPORT_DIR=/reports
+
+python -m orchestrator
 ```
 
-`docker compose down -v` removes the demo database volume and its data.
+## Kubernetes deployment
 
-## Automatic runs and reports
+Apply the manifests in this order:
 
-The included [performance workflow](.github/workflows/perf-gate.yml) runs automatically:
-
-- On every branch push, including pushes to feature branches.
-- When a pull request is opened, reopened, or updated.
-
-A push to a branch with an open pull request triggers both events, so GitHub Actions creates two runs for that commit.
-
-To find a run and its reports:
-
-1. Open the repository on GitHub and select **Actions**.
-2. Select the `perf-gate` workflow, then open the run for the branch or pull request you want.
-3. Read the `Run load scenario` and `Run concurrency scenario` steps for the human-readable k6 output and threshold results.
-4. In the run's **Artifacts** section, download `k6-reports-<run-id>-<attempt>` for `load-summary.json` and `concurrency-summary.json`.
-
-Artifacts are retained for 30 days. Reports are uploaded even when a test fails, so summaries from tests that ran are still available. If app startup or the health check fails before k6 starts, no k6 report is produced.
-
-## Use the workflow in another repository
-
-1. Add or adapt k6 scenarios in the application repository. Each scenario should use `__ENV.TARGET_URL` for the app's base URL.
-2. Add a workflow file under `.github/workflows/`, for example `performance.yml`:
-
-```yaml
-name: performance
-
-on:
-  push:
-    branches: ['**']
-  pull_request:
-
-jobs:
-  perf:
-    uses: 13siccario/perf-platform/.github/workflows/reusable-perf-gate.yml@main
-    with:
-      app_start_command: docker compose up -d --build
-      healthcheck_url: http://localhost:8000/health
-      target_url: http://localhost:8000
-      load_scenario: scenarios/load/products.js
-      concurrency_scenario: scenarios/concurrency/oversell.js
-      cleanup_command: docker compose down -v
+```bash
+kubectl apply -f k8s/orchestrator/rbac.yaml
+kubectl apply -f k8s/orchestrator/pvc.yaml
+kubectl apply -f k8s/orchestrator/deployment.yaml
+kubectl apply -f k8s/rollout/rollout.yaml
 ```
 
-The reusable workflow checks out the calling repository, installs k6, starts the app, waits for the optional health check, runs both scenarios, cleans up, and uploads the summaries to that run. Its scenario paths are relative to the calling repository.
+Then allow the rollout to pause at the designated gate step and let the orchestrator drive the promote or abort decision.
 
-### Inputs
+## Notes
 
-| Input | Required | Description |
-| --- | --- | --- |
-| `target_url` | Yes | Base URL passed to both scenarios as `TARGET_URL`. Do not add a trailing slash when the scenarios append paths. |
-| `load_scenario` | Yes | Repository-relative path to the load scenario. |
-| `concurrency_scenario` | Yes | Repository-relative path to the concurrency scenario. |
-| `app_start_command` | No | Shell command to start the app. The command should return once the app is running, for example by using `docker compose up -d`. |
-| `healthcheck_url` | No | URL polled for up to 60 seconds before running k6. |
-| `cleanup_command` | No | Shell command run after tests, including when a test fails. |
-
-The included [caller workflow](.github/workflows/perf-gate.yml) shows how this repository runs the reusable workflow against the demo shop.
-
-## Scope
-
-Included: load and concurrency checks, a demo FastAPI + Postgres app, automatic GitHub Actions runs, downloadable k6 summaries, and a reusable workflow.
-
-Not included: hosted dashboards, saved baseline comparisons, a separate orchestration API, or Slack and pull request comments.
+This is an implementation aligned with the design document, but it still assumes the surrounding cluster components are available in the target environment. The repo is set up for the orchestrator logic and manifests rather than a standalone local-only demo app.
